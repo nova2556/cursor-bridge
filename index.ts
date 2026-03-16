@@ -65,15 +65,6 @@ function stableCliMeta(reliability: CommandReliability = "high") {
   };
 }
 
-function interactiveMeta(reliability: CommandReliability = "medium") {
-  return {
-    lane: "interactive-emulated" as const,
-    reliability,
-    implementation: "tmux-pane-emulation",
-    heuristic: true,
-  };
-}
-
 type SessionInfo = {
   session: string;
   windows: string;
@@ -937,7 +928,7 @@ export async function listModels(config: Required<PluginConfig>, cwd: string) {
 // Poll tmux pane until agent returns to an idle state (blank prompt) or timeout.
 // Returns the captured output when done, or times out gracefully.
 export async function waitForAgent(config: Required<PluginConfig>, repo: string, waitSec = 120) {
-  const { key, session } = await requireInteractiveSession(config, repo);
+  const { key, session } = await requireInteractiveSession(config, repo, resolveRepo, tmuxSessionName, tmuxSessionExists, isAgentAlive);
   const deadline = Date.now() + Math.max(5, Math.min(600, waitSec)) * 1000;
   const pollMs = 3000;
   let lastSnapshot: InteractiveSnapshot | null = null;
@@ -952,7 +943,7 @@ export async function waitForAgent(config: Required<PluginConfig>, repo: string,
   let previousLive = "";
   while (Date.now() < deadline) {
     await sleep(pollMs);
-    const snapshot = await captureInteractiveSnapshot(session, 220);
+    const snapshot = await captureInteractiveSnapshot(session, 220, false, capturePane, sessionBaselines, lastSendState, streamReadOffsets);
     lastSnapshot = snapshot;
     const liveDelta = snapshot.streamDelta || "";
     if (liveDelta) lastLive = liveDelta;
@@ -1139,134 +1130,104 @@ export async function updateAgent(config: Required<PluginConfig>) {
   }
 }
 
-// Send the /compress slash command to a live interactive agent session to summarise
-// the conversation and free up context window space.
 export async function compressSession(config: Required<PluginConfig>, repo: string) {
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  if (!(await isAgentAlive(session))) {
-    throw new Error(`Agent in session ${session} appears to have exited. Restart with /cursor start ${key}`);
-  }
-  await runTmux(["send-keys", "-t", session, "/compress", "Enter"], 10);
-  return { action: "compress" as const, repo: key, session };
+  return compressSessionAction(config, repo, {
+    requireInteractiveSession,
+    runInteractiveSlashCommand,
+    markStreamOffset: (session) => markStreamOffset(session, streamReadOffsets),
+    runTmux,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
-// Send `/mcp enable <server>` or `/mcp disable <server>` to a live interactive agent session.
 export async function mcpControl(config: Required<PluginConfig>, repo: string, mcpAction: "enable" | "disable", mcpServer: string) {
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  if (!(await isAgentAlive(session))) {
-    throw new Error(`Agent in session ${session} appears to have exited. Restart with /cursor start ${key}`);
-  }
-  const slashCmd = `/mcp ${mcpAction} ${mcpServer}`;
-  await runTmux(["send-keys", "-t", session, slashCmd, "Enter"], 10);
-  return { action: "mcp" as const, repo: key, session, mcpAction, mcpServer };
+  return mcpControlAction(config, repo, mcpAction, mcpServer, {
+    requireInteractiveSession,
+    runInteractiveSlashCommand,
+    markStreamOffset: (session) => markStreamOffset(session, streamReadOffsets),
+    runTmux,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
-// Switch the model in a live interactive agent session by sending the `/models` slash command.
-// With no modelName, just opens the interactive model picker.
-// With a modelName, sends `/models` then types the name and confirms — best-effort since the
-// picker UI is text-based and may require exact matching.
 export async function switchModel(config: Required<PluginConfig>, repo: string, modelName?: string) {
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  if (!(await isAgentAlive(session))) {
-    throw new Error(`Agent in session ${session} appears to have exited. Restart with /cursor start ${key}`);
-  }
-  // Send the /models slash command to open the model picker.
-  await runTmux(["send-keys", "-t", session, "/models", "Enter"], 10);
-  if (modelName) {
-    // Wait briefly for the picker to render, then type the model name to filter/select it.
-    await sleep(800);
-    await runTmux(["send-keys", "-t", session, "-l", "--", modelName], 10);
-    await sleep(400);
-    await runTmux(["send-keys", "-t", session, "Enter", ""], 10);
-  }
-  return { action: "model" as const, repo: key, session, modelName: modelName || "(picker opened)" };
+  return switchModelAction(config, repo, modelName, {
+    requireInteractiveSession,
+    runInteractiveSlashCommand,
+    markStreamOffset: (session) => markStreamOffset(session, streamReadOffsets),
+    runTmux,
+    sleep,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
-// Add @<path> file/folder context reference to the current agent conversation.
-// Cursor agent supports `@path` syntax to attach context.
 export async function addContext(config: Required<PluginConfig>, repo: string, contextPath: string) {
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  if (!(await isAgentAlive(session))) {
-    throw new Error(`Agent in session ${session} appears to have exited. Restart with /cursor start ${key}`);
-  }
-  const ref = contextPath.startsWith("@") ? contextPath : `@${contextPath}`;
-  await runTmux(["send-keys", "-t", session, "-l", "--", ref], 10);
-  await sleep(300);
-  // Press space so the agent registers the context reference without submitting yet.
-  await runTmux(["send-keys", "-t", session, " "], 10);
-  return { action: "context" as const, repo: key, session, contextPath: ref };
-}
-
-// Send the /rules slash command to display current project rules inside the agent session.
-function hasMeaningfulSlashCommandOutput(text: string, slashCommand: string): boolean {
-  const cleaned = stripCommandEchoNoise(cleanStreamText(text || ""));
-  if (!cleaned) return false;
-  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return false;
-  if (lines.length === 1 && lines[0] === slashCommand) return false;
-  return lines.some((line) => line !== slashCommand && !/^[|\\/\-\s]+$/.test(line));
-}
-
-async function captureSlashCommandOutput(session: string, slashCommand: "/rules" | "/commands", lines: number): Promise<string> {
-  let best = "";
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (attempt > 0) await sleep(500);
-    const streamDelta = await readStreamDelta(session);
-    const { stdout } = await runTmux(["capture-pane", "-t", session, "-p", "-S", `-${lines}`], 10).catch(() => ({ stdout: "" }));
-    const raw = normalizePane(streamDelta.delta || stdout || "");
-    const markerIdx = raw.lastIndexOf(slashCommand);
-    const scoped = markerIdx === -1 ? normalizePane(streamDelta.delta || "") : raw.slice(markerIdx + slashCommand.length);
-    const candidate = stripCommandEchoNoise(cleanStreamText(scoped) || scoped).trim();
-    if (candidate.length > best.length) best = candidate;
-    if (hasMeaningfulSlashCommandOutput(candidate, slashCommand)) return candidate;
-  }
-  return best;
+  return addContextAction(config, repo, contextPath, {
+    requireInteractiveSession,
+    runTmux,
+    sleep,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
 export async function showRules(config: Required<PluginConfig>, repo: string) {
-  const { key, session } = await requireInteractiveSession(config, repo);
-  await runInteractiveSlashCommand(session, "/rules");
-  const cleaned = await captureSlashCommandOutput(session, "/rules", 60);
-  return interactiveResult({ action: "rules" as const, repo: key, session, output: trimBlock(cleaned, 8000) }, "low");
+  return showRulesAction(config, repo, {
+    requireInteractiveSession,
+    runInteractiveSlashCommand,
+    markStreamOffset: (session) => markStreamOffset(session, streamReadOffsets),
+    runTmux,
+    captureSlashCommandOutput,
+    trimBlock,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
-// Send the /commands slash command to list available slash commands.
 export async function showCommands(config: Required<PluginConfig>, repo: string) {
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  if (!(await isAgentAlive(session))) {
-    throw new Error(`Agent in session ${session} appears to have exited. Restart with /cursor start ${key}`);
-  }
-  await markStreamOffset(session);
-  await runTmux(["send-keys", "-t", session, "/commands", "Enter"], 10);
-  const cleaned = await captureSlashCommandOutput(session, "/commands", 70);
-  return { action: "commands" as const, repo: key, session, output: trimBlock(cleaned, 8000), ...interactiveMeta("low") };
+  return showCommandsAction(config, repo, {
+    requireInteractiveSession,
+    runInteractiveSlashCommand,
+    markStreamOffset: (session) => markStreamOffset(session, streamReadOffsets),
+    runTmux,
+    captureSlashCommandOutput,
+    trimBlock,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
-// Send Ctrl+R to trigger inline review / diff review inside the agent session.
 export async function reviewSession(config: Required<PluginConfig>, repo: string) {
-  const { key, session } = await requireInteractiveSession(config, repo);
-  await runTmux(["send-keys", "-t", session, "C-r"], 10);
-  return interactiveResult({ action: "review" as const, repo: key, session }, "low");
+  return reviewSessionAction(config, repo, {
+    requireInteractiveSession,
+    runTmux,
+    interactiveResult,
+    resolveRepo,
+    tmuxSessionName,
+    tmuxSessionExists,
+    isAgentAlive,
+  });
 }
 
 // Gracefully quit the agent session: send Ctrl+C twice to interrupt any running task,

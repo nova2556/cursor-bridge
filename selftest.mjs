@@ -31,6 +31,7 @@ import {
 } from './index.ts';
 import { stripCommandEchoNoise, cleanOneShotOutput, extractLastAssistantAnswer, paneLooksBusy, paneShowsInputPrompt } from './heuristics.ts';
 import { preferStreamOutput, buildInteractiveOutput } from './interactive-runtime.ts';
+import { interactiveMeta, interactiveResult } from './interactive-actions.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 
