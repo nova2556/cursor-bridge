@@ -12,12 +12,12 @@ export function interactiveResult<T extends Record<string, unknown>>(payload: T,
 }
 
 export async function requireInteractiveSession(
-  config: { allowAgent: boolean },
+  config: { allowAgent: boolean; repos: Record<string, string>; tmuxPrefix: string },
   repo: string,
-  resolveRepo: (config: any, repo: string) => { key: string },
-  tmuxSessionName: (config: any, key: string) => string,
-  tmuxSessionExists: (session: string) => Promise<boolean>,
-  isAgentAlive: (session: string) => Promise<boolean>,
+  resolveRepo: InteractiveSessionDeps["resolveRepo"],
+  tmuxSessionName: InteractiveSessionDeps["tmuxSessionName"],
+  tmuxSessionExists: InteractiveSessionDeps["tmuxSessionExists"],
+  isAgentAlive: InteractiveSessionDeps["isAgentAlive"],
 ) {
   if (!config.allowAgent) throw new Error("agent mode is disabled. Set allowAgent=true to enable Cursor agent sessions.");
   const { key } = resolveRepo(config as any, repo);
