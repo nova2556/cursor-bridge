@@ -30,6 +30,7 @@ import {
   runTask,
 } from './index.ts';
 import { stripCommandEchoNoise, cleanOneShotOutput, extractLastAssistantAnswer, paneLooksBusy, paneShowsInputPrompt } from './heuristics.ts';
+import { preferStreamOutput, buildInteractiveOutput } from './interactive-runtime.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -263,10 +264,31 @@ await step('prompt heuristics cleaning behavior', async () => {
   ].join('\n');
   const cleaned = stripCommandEchoNoise(sample);
   const oneShot = cleanOneShotOutput('#< CLIXML\nCursor Agent v1.2.3\nOutcome: ok\n<Objs></Objs>');
+  const assistantAnswer = extractLastAssistantAnswer(['you: fix it', 'Updated src/auth.ts', '>'].join('\n'));
+  const busy = paneLooksBusy('Thinking...');
+  const promptVisible = paneShowsInputPrompt('Add a follow-up\n>');
+  const preferred = preferStreamOutput('stream output', 'pane output', true);
+  const built = buildInteractiveOutput({
+    pane: 'pane output',
+    scopedPane: 'scoped pane output',
+    busy: false,
+    promptVisible: true,
+    answer: 'assistant answer',
+    answerVisible: true,
+    streamDelta: 'live delta',
+    streamTailText: 'tail text',
+    logPath: '/tmp/demo.log',
+    streamBytes: 42,
+  });
   return {
     cleaned,
     oneShot,
     hasOutcome: oneShot.includes('Outcome: ok'),
+    assistantAnswer,
+    busy,
+    promptVisible,
+    preferred,
+    built,
   };
 });
 

@@ -49,12 +49,6 @@ type PluginConfig = {
 
 type RepoInfo = { key: string; cwd: string };
 
-type SendState = {
-  sentAt: number;
-  prompt: string;
-  submitMethod?: string;
-};
-
 const lastSendState = new Map<string, SendState>();
 const sessionBaselines = new Map<string, string>();
 const streamReadOffsets = new Map<string, number>();
@@ -227,80 +221,6 @@ function shellSplit(input: string): string[] {
   return parts;
 }
 
-function streamRootDir(): string {
-  return path.join(tmpdir(), "openclaw-cursor-bridge-streams");
-}
-
-function streamLogPath(session: string): string {
-  return path.join(streamRootDir(), `${session}.log`);
-}
-
-async function ensureStreamRoot(): Promise<void> {
-  await mkdir(streamRootDir(), { recursive: true });
-}
-
-async function resetStreamCapture(session: string): Promise<string> {
-  await ensureStreamRoot();
-  const logPath = streamLogPath(session);
-  await rm(logPath, { force: true }).catch(() => {});
-  await writeFile(logPath, "", "utf8");
-  streamReadOffsets.set(session, 0);
-  return logPath;
-}
-
-async function startStreamCapture(session: string): Promise<string> {
-  const logPath = await resetStreamCapture(session);
-  const pipeCommand = `cat >> ${quoteSh(logPath)}`;
-  await runTmux(["pipe-pane", "-o", "-t", `${session}:0.0`, pipeCommand], 10);
-  return logPath;
-}
-
-async function stopStreamCapture(session: string): Promise<void> {
-  await runTmux(["pipe-pane", "-t", `${session}:0.0`], 10).catch(() => {});
-}
-
-async function readStreamLog(session: string): Promise<string> {
-  const logPath = streamLogPath(session);
-  try {
-    return await readFile(logPath, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-async function readStreamDelta(session: string, reset = false): Promise<{ delta: string; offset: number; logPath: string }> {
-  const logPath = streamLogPath(session);
-  const raw = await readStreamLog(session);
-  const prior = reset ? 0 : (streamReadOffsets.get(session) ?? 0);
-  const safePrior = Math.max(0, Math.min(prior, raw.length));
-  const delta = raw.slice(safePrior);
-  streamReadOffsets.set(session, raw.length);
-  return { delta: cleanStreamText(delta), offset: raw.length, logPath };
-}
-
-async function markStreamOffset(session: string): Promise<number> {
-  const raw = await readStreamLog(session);
-  streamReadOffsets.set(session, raw.length);
-  return raw.length;
-}
-
-async function peekStreamTail(session: string, maxChars = 12000): Promise<{ text: string; logPath: string; bytes: number }> {
-  const logPath = streamLogPath(session);
-  const raw = await readStreamLog(session);
-  const slice = raw.length > maxChars ? raw.slice(raw.length - maxChars) : raw;
-  return { text: cleanStreamText(slice), logPath, bytes: raw.length };
-}
-
-function preferStreamOutput(streamText: string, paneText: string, busy: boolean): string {
-  const cleanStream = cleanStreamText(streamText);
-  const cleanPane = cleanStreamText(paneText);
-  if (busy && cleanStream) return cleanStream;
-  return cleanPane || cleanStream;
-}
-
-
-
-
 type ParsedInlineOptions = {
   model?: string;
   outputFormat?: "text" | "json" | "stream-json";
@@ -394,35 +314,6 @@ async function capturePane(session: string, lines = 160): Promise<string> {
   return normalizePane(stdout);
 }
 
-
-function trimToSessionBaseline(session: string, pane: string): string {
-  const baseline = sessionBaselines.get(session);
-  if (!baseline) return pane;
-  const idx = pane.lastIndexOf(baseline);
-  if (idx === -1) return pane;
-  return pane.slice(idx + baseline.length).trimStart();
-}
-
-function trimToLastSendContext(session: string, pane: string): string {
-  const baselineTrimmed = trimToSessionBaseline(session, pane);
-  const state = lastSendState.get(session);
-  if (!state) return baselineTrimmed;
-  const normalizedPrompt = normalizePane(state.prompt).trim();
-  if (!normalizedPrompt) return baselineTrimmed;
-  const idx = baselineTrimmed.lastIndexOf(normalizedPrompt);
-  if (idx !== -1) return baselineTrimmed.slice(idx + normalizedPrompt.length).trimStart();
-
-  const lines = baselineTrimmed.split(/\r?\n/);
-  const promptLines = normalizedPrompt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  const marker = promptLines[promptLines.length - 1];
-  if (!marker) return baselineTrimmed;
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (lines[i].includes(marker)) {
-      return lines.slice(i + 1).join("\n").trimStart();
-    }
-  }
-  return baselineTrimmed;
-}
 
 // Resolve a repo key to its filesystem path.
 // Supports "repo" (exact key) and "repo:subdir" (subproject syntax).
