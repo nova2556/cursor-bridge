@@ -1,0 +1,65 @@
+{
+  "id": "cursor-bridge",
+  "name": "Cursor Bridge",
+  "description": "Restricted bridge from OpenClaw to Cursor for whitelisted repos, with tmux-backed agent sessions.",
+  "version": "0.7.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "binary": { "type": "string", "default": "cursor" },
+      "agentBinary": { "type": "string", "default": "agent" },
+      "agentCommand": { "type": "string", "default": "" },
+      "agentWindowsBin": { "type": "string", "default": "", "description": "Path to the Windows-side agent binary (e.g. C:\\Users\\rog\\AppData\\Local\\cursor-agent\\agent.cmd). When set, the plugin wraps it in powershell.exe with Set-Location injected automatically." },
+      "timeoutSec": { "type": "integer", "minimum": 5, "maximum": 7200, "default": 30 },
+      "allowAgent": { "type": "boolean", "default": true },
+      "tmuxPrefix": { "type": "string", "default": "cursor" },
+      "startDelaySec": { "type": "integer", "minimum": 1, "maximum": 30, "default": 3 },
+      "trustDelaySec": { "type": "integer", "minimum": 1, "maximum": 30, "default": 3 },
+      "defaultModel": { "type": "string", "default": "sonnet-4.6" },
+      "apiKey": { "type": "string", "default": "" },
+      "enableGitWrapper": { "type": "boolean", "default": true, "description": "Install a Cursor-only PowerShell git wrapper that forwards git repo checks to WSL git, avoiding unstable Windows git detection in WSL->Windows agent sessions." },
+      "taskDefaultWaitSec": { "type": "integer", "minimum": 30, "maximum": 1800, "default": 240 },
+      "taskRecentHistoryLimit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 6 },
+      "taskResumeWindowHours": { "type": "integer", "minimum": 1, "maximum": 168, "default": 24 },
+      "taskMilestoneMax": { "type": "integer", "minimum": 3, "maximum": 12, "default": 6 },
+      "hooks": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "preTaskPrompt": { "type": "string", "default": "" },
+          "postTaskPrompt": { "type": "string", "default": "" },
+          "assumptionsPrompt": { "type": "string", "default": "" }
+        },
+        "default": {}
+      },
+      "repos": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "default": {}
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": { "label": "Enabled" },
+    "binary": { "label": "Cursor Open Binary", "placeholder": "cursor" },
+    "agentBinary": { "label": "Cursor Agent Binary (Linux-native)", "placeholder": "agent" },
+    "agentCommand": { "label": "Cursor Agent Command (full shell invocation)", "placeholder": "powershell.exe -Command \"& 'C:\\\\Users\\\\rog\\\\AppData\\\\Local\\\\cursor-agent\\\\agent.cmd'\"", "advanced": true },
+    "agentWindowsBin": { "label": "Cursor Agent Windows Binary (WSL auto-wrap)", "placeholder": "C:\\Users\\rog\\AppData\\Local\\cursor-agent\\agent.cmd", "advanced": true },
+    "timeoutSec": { "label": "Timeout (seconds)", "advanced": true },
+    "allowAgent": { "label": "Allow Cursor agent sessions" },
+    "tmuxPrefix": { "label": "tmux session prefix", "advanced": true },
+    "startDelaySec": { "label": "Shell ready delay (seconds)", "advanced": true },
+    "trustDelaySec": { "label": "Workspace trust accept delay (seconds)", "advanced": true },
+    "defaultModel": { "label": "Default model (e.g. sonnet-4.6)", "placeholder": "sonnet-4.6", "advanced": true },
+    "apiKey": { "label": "Cursor API Key (CURSOR_API_KEY)", "placeholder": "", "advanced": true, "secret": true },
+    "enableGitWrapper": { "label": "Enable Cursor-only git wrapper", "advanced": true },
+    "taskDefaultWaitSec": { "label": "Task default wait (seconds)", "advanced": true },
+    "taskRecentHistoryLimit": { "label": "Task recent-history candidates", "advanced": true },
+    "taskResumeWindowHours": { "label": "Task resume window hours", "advanced": true },
+    "taskMilestoneMax": { "label": "Task milestone cap", "advanced": true },
+    "hooks": { "label": "Task prompt hooks", "advanced": true },
+    "repos": { "label": "Allowed Repositories" }
+  }
+}
