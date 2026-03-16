@@ -2,9 +2,9 @@
 
 ## Status
 
-Phase 1 refactor is complete.
+Phase 1 and the main body of Phase 2 are complete.
 
-This phase focused on making the plugin easier to reason about and less misleading about reliability, without changing the overall public command surface.
+The plugin has been refactored from a single large implementation file into a lane-aware structure with dedicated modules for heuristics, interactive runtime state, interactive actions, CLI-style execution, and task orchestration.
 
 ## Main architectural conclusion
 
@@ -12,13 +12,13 @@ This phase focused on making the plugin easier to reason about and less misleadi
 
 1. **Stable CLI / headless lane**
    - Best for automation and predictable completion
-   - Includes: `run`, `task` in oneshot/auto mode, `models`, `update`
+   - Includes: `run`, `task` in oneshot/auto mode, `models`, `update`, `history`-style command execution
 
 2. **Interactive emulation lane**
    - Best-effort tmux-driven control of a live Cursor Agent session
    - Includes: `start`, `resume`, `send`, `tail`, `wait`, `compress`, `mcp`, `model`, `context`, `rules`, `commands`, `review`, `attach`, `quit`
 
-The old code mixed these two styles too freely. The refactor makes the distinction explicit.
+The original code mixed these two styles too freely. The refactor makes the distinction explicit in both behavior and code organization.
 
 ## What changed
 
@@ -28,23 +28,52 @@ The old code mixed these two styles too freely. The refactor makes the distincti
   - `stableCliMeta()`
   - `interactiveMeta()`
 - Interactive and CLI-like results now expose reliability intent more clearly.
+- `task auto` now prefers the stable CLI lane unless interactive mode is explicitly requested or `taskPreferInteractive=true`.
 
-### 2. Task policy
+### 2. Module split
 
-- `task auto` now prefers **stable one-shot CLI execution** by default.
-- Interactive mode is only preferred when:
-  - `mode=interactive` is explicit, or
-  - `config.taskPreferInteractive=true`
+The codebase is no longer centered on a single giant `index.ts` implementation.
+
+Current extracted modules:
+
+- `heuristics.ts`
+  - output cleaning
+  - pane heuristics
+  - assistant answer extraction
+- `interactive-runtime.ts`
+  - stream log helpers
+  - snapshot capture
+  - output shaping
+  - baseline / last-send trimming
+- `interactive-actions.ts`
+  - slash/picker/context/review style interactive actions
+  - interactive result metadata helpers
+- `cli-lane.ts`
+  - `listHistory`
+  - `listModels`
+  - `runOneShot`
+  - `loginAgent`
+  - `updateAgent`
+- `task-orchestrator.ts`
+  - task spec compilation
+  - task prompt construction
+  - session choice
+  - signal extraction
+  - milestone inference
+  - summary synthesis
+  - task execution orchestration
+
+`index.ts` now acts much more like an integration/registration layer with remaining shared glue.
 
 ### 3. Interactive session helpers
 
-Added shared helpers to reduce repeated logic:
+Shared interactive helpers now exist and are reused instead of being duplicated inline:
 
 - `requireInteractiveSession()`
 - `interactiveResult()`
 - `runInteractiveSlashCommand()`
 
-These now back the interactive action-style methods such as:
+These back interactive action-style methods such as:
 - `compressSession`
 - `mcpControl`
 - `switchModel`
@@ -55,12 +84,12 @@ These now back the interactive action-style methods such as:
 
 ### 4. Interactive runtime observation helpers
 
-Added shared snapshot/output helpers:
+Shared snapshot/output helpers now exist in `interactive-runtime.ts`:
 
 - `captureInteractiveSnapshot()`
 - `buildInteractiveOutput()`
 
-These are now used to unify the observation model for:
+These are used to unify the observation model for:
 - `sendToAgent`
 - `tailAgent`
 - `waitForAgent`
@@ -74,7 +103,7 @@ Interactive flows now expose more diagnostic data:
 
 This makes failures easier to diagnose without pretending the interactive lane is protocol-stable.
 
-### 6. Selftest split
+### 6. Selftest split and stabilization
 
 `selftest.mjs` now defaults to static/pure-function coverage only.
 
@@ -84,7 +113,7 @@ Integration phases that depend on real tmux + Cursor behavior are opt-in via:
 CURSOR_BRIDGE_SELFTEST_INTEGRATION=1 npm run selftest -- /home/rog/.openclaw/openclaw.json
 ```
 
-Default selftest command:
+Default static selftest command:
 
 ```bash
 npm run selftest -- /home/rog/.openclaw/openclaw.json
@@ -97,39 +126,49 @@ Default static selftest currently passes:
 - passed: 20
 - failed: 0
 
-This validates:
+This validates at least the following:
 - command parsing
 - task spec compilation
 - task summary synthesis
-- noise cleaning
-- prompt/heuristic cleaning basics
+- heuristic cleaning behavior
+- runtime helper output shaping
 - static control-flow assumptions
+- module import wiring across the current split
+
+## Current structure summary
+
+At this point, `index.ts` mainly retains:
+
+- config normalization and shared types
+- repo/path/tmux/process glue
+- start/resume/stop/quit/attach orchestration
+- command parsing
+- plugin registration / command + tool entrypoints
+
+This is a major reduction in responsibility compared with the original monolithic structure.
 
 ## Known remaining limitations
 
-This refactor does **not** fully solve the deeper Cursor product-model gaps yet.
+This refactor still does **not** fully solve deeper Cursor product-model gaps.
 
 Still missing or incomplete:
 
 - explicit queue vs immediate message semantics
 - checkpoint awareness
 - full protocol-like completion guarantees for interactive mode
-- dedicated modular file split (`interactive-runtime.ts`, `slash-actions.ts`, etc.)
-- broader pure unit tests for all heuristic helpers
+- broader pure unit tests for all heuristics and module seams
 - real integration regression coverage in CI or repeatable local automation
+- further reduction of residual glue inside `index.ts`
 
 ## Recommended next phase
 
-Phase 2 should focus on:
+A future polish / Phase 3 should focus on:
 
-1. splitting large `index.ts` into smaller modules
-2. expanding heuristic unit tests around:
-   - `extractLastAssistantAnswer`
-   - `paneLooksBusy`
-   - `paneShowsInputPrompt`
-   - output cleaning helpers
-3. improving integration verification flows for real Cursor/tmux environments
+1. expanding pure unit coverage for heuristic edge cases and module boundaries
+2. reducing remaining glue density in `index.ts`
+3. improving integration verification for real Cursor/tmux sessions
+4. exploring official Cursor semantics more deeply where possible (queue/immediate/checkpoints)
 
 ## Repository note
 
-This plugin is now maintained in its own git repository at this directory so future verification and commits are straightforward.
+This plugin is now maintained in its own git repository at this directory, with the refactor committed incrementally so each module extraction can be reviewed independently.
