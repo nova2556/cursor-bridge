@@ -790,52 +790,15 @@ export async function stopAgent(config: Required<PluginConfig>, repo: string) {
 // Expected line format (may vary by agent version):
 //   2f89b160-12d6-47b7-afcf-cca35a50bff6  分析下这个项目  2026-03-09
 // Returns an empty array if no UUIDs are found.
-function parseHistoryOutput(raw: string): Array<{ id: string; title: string; raw: string }> {
-  const entries: Array<{ id: string; title: string; raw: string }> = [];
-  const uuidPattern = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(uuidPattern);
-    if (!match) continue;
-    const id = match[1];
-    // Title is everything after the UUID, strip leading/trailing whitespace and control chars.
-    const title = line.slice(line.indexOf(id) + id.length).replace(/\s+/g, " ").trim() || "(no title)";
-    entries.push({ id, title, raw: line.trim() });
-  }
-  return entries;
-}
-
-// List Cursor agent conversation history via `agent ls`.
-// `agent ls` requires a real TTY (it uses Ink TUI), so we spawn it inside a
-// temporary tmux session, wait for it to render, capture the pane, then clean up.
-// Returns both structured entries (for programmatic use) and raw text (for display).
 export async function listHistory(config: Required<PluginConfig>, cwd: string) {
-  if (!config.allowAgent) throw new Error("agent mode is disabled. Set allowAgent=true to enable Cursor agent sessions.");
-  const lsSession = `${config.tmuxPrefix}-ls-${Date.now()}`;
-  const gitWrapperWindowsPath = await ensureGitWrapper(config);
-  const launch = buildAgentLaunch(config, cwd, undefined, gitWrapperWindowsPath, " ls");
-  const lsCommand = launch.command;
-  try {
-    await runTmux(["new-session", "-d", "-s", lsSession, "-c", cwd], 20);
-    await sleep(config.startDelaySec * 1000);
-    await runTmux(["send-keys", "-t", lsSession, "-l", "--", lsCommand], 10);
-    await runTmux(["send-keys", "-t", lsSession, "Enter"], 10);
-    // `agent ls` renders immediately — poll up to 6 s for the list to appear.
-    let output = "";
-    for (let i = 0; i < 6; i++) {
-      await sleep(1000);
-      const { stdout } = await runTmux(["capture-pane", "-t", lsSession, "-p", "-S", "-60"], 10).catch(() => ({ stdout: "" }));
-      output = stdout;
-      // Stop polling once we see conversation IDs (UUID-like strings) or an "empty" message.
-      if (/[0-9a-f]{8}-[0-9a-f]{4}/i.test(output) || /no conversations|empty|no chats/i.test(output)) break;
-    }
-    const entries = parseHistoryOutput(output);
-    return { action: "history" as const, entries, output: trimBlock(output, 12000), ...interactiveMeta("low") };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { action: "history" as const, entries: [], output: `(agent ls failed: ${message})`, ...interactiveMeta("low") };
-  } finally {
-    await runTmux(["kill-session", "-t", lsSession], 10).catch(() => {});
-  }
+  return listHistoryCli(config, cwd, {
+    ensureGitWrapper,
+    buildAgentLaunch,
+    runTmux,
+    sleep,
+    trimBlock,
+    interactiveMeta,
+  });
 }
 
 // Resume a previous Cursor agent conversation by chat ID, launching it inside tmux.
