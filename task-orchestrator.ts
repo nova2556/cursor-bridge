@@ -69,6 +69,7 @@ export function buildTaskPrompt(spec: any): string {
   const parts = [
     `Task goal: ${spec.goal}`,
     `Deliverable: ${spec.deliverable}`,
+    "Treat this as a fresh execution of the task. Do not answer by saying the task was already completed earlier in the conversation. If similar work exists above, re-run the reasoning and restate the result as a standalone final answer.",
     spec.assumptions.length ? `Operating assumptions:\n${spec.assumptions.map((item: string, idx: number) => `${idx + 1}. ${item}`).join("\n")}` : "",
     spec.constraints.length ? `Constraints:\n${spec.constraints.map((item: string, idx: number) => `${idx + 1}. ${item}`).join("\n")}` : "",
     spec.milestones.length ? `Milestones to work through:\n${spec.milestones.map((item: string, idx: number) => `${idx + 1}. ${item}`).join("\n")}` : "",
@@ -83,40 +84,41 @@ export function buildTaskPrompt(spec: any): string {
 }
 
 export async function chooseTaskSession(config: any, repo: string, spec: any, deps: any) {
+  const summaryLikeGoal = /\b(summary|summarize|inspect|analyze|analyse|review|overview|purpose|key directories|next engineering step|精简摘要|总结|概述|分析|梳理|检查)\b/i.test(spec.goal || "");
   if (spec.mode === "oneshot") {
     return { mode: "oneshot", policy: "explicit oneshot mode", sessionStrategy: "oneshot", lane: "stable-cli", reliability: "high" };
   }
   if (spec.mode === "interactive") {
     const { key, cwd } = deps.resolveRepo(config, repo);
     const session = deps.tmuxSessionName(config, key);
-    if ((spec.resume === "auto" || spec.resume === "reuse-live") && await deps.tmuxSessionExists(session) && await deps.isAgentAlive(session)) {
+    if (!summaryLikeGoal && (spec.resume === "auto" || spec.resume === "reuse-live") && await deps.tmuxSessionExists(session) && await deps.isAgentAlive(session)) {
       return { mode: "interactive", policy: "explicit interactive mode reused live session for continuity", sessionStrategy: "reuse-live", lane: "interactive-emulated", reliability: "medium", liveSession: session };
     }
-    if (spec.resume !== "fresh") {
+    if (!summaryLikeGoal && spec.resume !== "fresh") {
       const history = await deps.listHistory(config, cwd).catch(() => ({ entries: [], output: "" }));
       const recentEntries = history.entries.slice(0, config.taskRecentHistoryLimit);
       if (recentEntries.length && (spec.resume === "auto" || spec.resume === "resume-recent")) {
         return { mode: "interactive", policy: `explicit interactive mode resumed recent stored conversation (${recentEntries[0]?.id ?? "latest"})`, sessionStrategy: "resume-recent", lane: "interactive-emulated", reliability: "medium", resumedChatId: recentEntries[0]?.id, historyCount: recentEntries.length };
       }
     }
-    return { mode: "interactive", policy: "explicit interactive mode started a fresh interactive session", sessionStrategy: "fresh-start", lane: "interactive-emulated", reliability: "medium" };
+    return { mode: "interactive", policy: summaryLikeGoal ? "explicit interactive mode forced a fresh session for a summary-like task to avoid answer reuse" : "explicit interactive mode started a fresh interactive session", sessionStrategy: "fresh-start", lane: "interactive-emulated", reliability: "medium" };
   }
   if (!config.taskPreferInteractive) {
     return { mode: "oneshot", policy: "auto mode prefers stable one-shot CLI execution", sessionStrategy: "oneshot", lane: "stable-cli", reliability: "high" };
   }
   const { key, cwd } = deps.resolveRepo(config, repo);
   const session = deps.tmuxSessionName(config, key);
-  if ((spec.resume === "auto" || spec.resume === "reuse-live") && await deps.tmuxSessionExists(session) && await deps.isAgentAlive(session)) {
+  if (!summaryLikeGoal && (spec.resume === "auto" || spec.resume === "reuse-live") && await deps.tmuxSessionExists(session) && await deps.isAgentAlive(session)) {
     return { mode: "interactive", policy: "auto mode reused live session for continuity", sessionStrategy: "reuse-live", lane: "interactive-emulated", reliability: "medium", liveSession: session };
   }
-  if (spec.resume !== "fresh") {
+  if (!summaryLikeGoal && spec.resume !== "fresh") {
     const history = await deps.listHistory(config, cwd).catch(() => ({ entries: [], output: "" }));
     const recentEntries = history.entries.slice(0, config.taskRecentHistoryLimit);
     if (recentEntries.length && (spec.resume === "auto" || spec.resume === "resume-recent")) {
       return { mode: "interactive", policy: `auto mode resumed recent stored conversation (${recentEntries[0]?.id ?? "latest"})`, sessionStrategy: "resume-recent", lane: "interactive-emulated", reliability: "medium", resumedChatId: recentEntries[0]?.id, historyCount: recentEntries.length };
     }
   }
-  return { mode: "interactive", policy: "auto mode started a fresh interactive session", sessionStrategy: "fresh-start", lane: "interactive-emulated", reliability: "medium" };
+  return { mode: "interactive", policy: summaryLikeGoal ? "auto mode forced a fresh session for a summary-like task to avoid answer reuse" : "auto mode started a fresh interactive session", sessionStrategy: "fresh-start", lane: "interactive-emulated", reliability: "medium" };
 }
 
 export function taskOutputLines(output: string): string[] {
@@ -181,6 +183,13 @@ export function normalizeTaskInteractiveOutput(raw: string): string {
     return true;
   });
   const joined = filtered.join("\n").trim();
+  if (!joined) return "";
+
+  const structuredSignals = /(结果|项目概述|关键目录|当前状态|最可能的下一步工程任务|里程碑|关键发现|验证|风险|Outcome|Milestones|Changes|Validation|Risks|Summary)/i;
+  const bulletLines = filtered.filter((line) => /^[-*•]|^\d+[.)]|^\|/.test(line.trim())).length;
+  const longForm = joined.length > 280 || filtered.length >= 6 || bulletLines >= 2 || structuredSignals.test(joined);
+  if (longForm) return joined;
+
   const last = filtered.at(-1)?.trim() || "";
   if (last && !/[:：]$/.test(last) && !/^(Outcome|Milestones|Changes|Validation|Risks|Evidence|Gaps|Final verdict)\b/i.test(last)) {
     return last;
@@ -225,12 +234,25 @@ export async function maybeAdvanceInteractiveTask(config: any, repo: string, spe
 
 export function synthesizeTaskSummary(spec: any, state: any): string {
   const lines = taskOutputLines(state.output || state.rawOutput || "");
-  const outcome = findTaskSummaryLine(lines, /\b(outcome|result|completed|finished|shipped|fixed|implemented|blocked|timed out)\b/i)
+  const nonRiskLines = lines.filter((line) => !/\b(risk|follow-up|follow up|next step|next steps|todo|caveat|blocker|approval)\b/i.test(line));
+  const headlineOutcome =
+    findTaskSummaryLine(nonRiskLines, /^(结果|项目概述|outcome|result|summary|仓库是|项目是)\b/i)
+    || findTaskSummaryLine(nonRiskLines, /\b(completed|finished|shipped|fixed|implemented|timed out)\b/i)
+    || nonRiskLines.find((line) => line.length > 20)
     || state.blockerSummary
     || state.approvalSummary
-    || lines.at(-1)
     || lines[0]
+    || lines.at(-1)
     || (state.phase === "timed_out" ? "Timed out before the agent produced a stable final answer." : "Completed without a concise final line from the agent.");
+  const strippedHeadline = headlineOutcome
+    .replace(/^(结果|项目概述|outcome|result|summary)[:：]?\s*/i, "")
+    .trim();
+  const headlineOnly = /^(结果|项目概述|outcome|result|summary)[:：]?$/i.test(headlineOutcome.trim());
+  const headlineIndex = nonRiskLines.findIndex((line) => line === headlineOutcome);
+  const followLine = headlineIndex >= 0
+    ? nonRiskLines.slice(headlineIndex + 1).find((line) => line.trim() && !/^(里程碑|关键目录|关键发现|验证|风险|changes|validation|risks)\b/i.test(line))
+    : undefined;
+  const outcome = (headlineOnly && followLine ? followLine : strippedHeadline).trim();
   const completedCount = state.milestoneStatus.filter((item: any) => item.status === "inferred_done").length;
   const blockedCount = state.milestoneStatus.filter((item: any) => item.status === "blocked").length;
   const milestoneLine = state.milestoneStatus.map((item: any, idx: number) => `${idx + 1}. ${item.title} — ${item.status === "inferred_done" ? "done" : item.status === "blocked" ? "blocked" : "pending"}`).join("\n");

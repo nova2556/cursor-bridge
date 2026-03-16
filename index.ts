@@ -695,7 +695,7 @@ export async function startAgent(config: Required<PluginConfig>, repo: string, m
   const launch = buildAgentLaunch(config, cwd, model, gitWrapperWindowsPath);
   const launchOnce = async () => {
     await runTmux(["new-session", "-d", "-s", session, "-c", cwd], 20);
-    await startStreamCapture(session);
+    await resetStreamCapture(session, streamReadOffsets);
     await sleep(config.startDelaySec * 1000);
     await runTmux(["send-keys", "-t", session, "-l", "--", launch.command], 10);
     await runTmux(["send-keys", "-t", session, "Enter"], 10);
@@ -727,17 +727,10 @@ export async function startAgent(config: Required<PluginConfig>, repo: string, m
 }
 
 export async function sendToAgent(config: Required<PluginConfig>, repo: string, text: string) {
-  if (!config.allowAgent) throw new Error("agent mode is disabled. Set allowAgent=true to enable Cursor agent sessions.");
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  if (!(await isAgentAlive(session))) {
-    throw new Error(`Agent in session ${session} appears to have exited. Restart with /cursor start ${key}`);
-  }
-
-  const before = await capturePane(session, 120);
+  const { key, session } = await requireInteractiveSession(config, repo, resolveRepo, tmuxSessionName, tmuxSessionExists, isAgentAlive);
+  const before = await captureInteractiveSnapshot(session, 120, false, capturePane, sessionBaselines, lastSendState, streamReadOffsets);
+  const beforeComparable = before.scopedPane || before.pane;
+  const beforeAnswer = before.answer;
   const submitAttempts: string[] = [];
   const submitMethods: Array<{ name: string; run: () => Promise<void> }> = [
     {
@@ -771,19 +764,32 @@ export async function sendToAgent(config: Required<PluginConfig>, repo: string, 
 
   for (let i = 0; i < submitMethods.length; i += 1) {
     const method = submitMethods[i];
+    await markStreamOffset(session, streamReadOffsets);
     await method.run();
     submitAttempts.push(method.name);
-    await sleep(700);
-    const after = await capturePane(session, 120);
-    const changed = after.trim() !== before.trim();
-    const busy = paneLooksBusy(after);
-    const promptVisible = paneShowsInputPrompt(after);
-    const answerBlock = extractLastAssistantAnswer(after);
-    const likelyAccepted = changed && (busy || (!promptVisible && answerBlock.length > 0));
+    await sleep(900);
+    const after = await captureInteractiveSnapshot(session, 140, false, capturePane, sessionBaselines, lastSendState, streamReadOffsets);
+    const afterComparable = after.scopedPane || after.pane;
+    const changed = afterComparable.trim() !== beforeComparable.trim();
+    const answerAdvanced = !!after.answer && after.answer !== beforeAnswer;
+    const hasLiveSignal = !!after.streamDelta;
+    const likelyAccepted = changed && (after.busy || hasLiveSignal || answerAdvanced || !after.promptVisible);
     if (likelyAccepted) {
-        await markStreamOffset(session);
       lastSendState.set(session, { sentAt: Date.now(), prompt: text, submitMethod: method.name });
-      return { action: "send" as const, repo: key, session, sent: text, submitMethod: method.name, ...interactiveMeta("medium") };
+      return interactiveResult({
+        action: "send" as const,
+        repo: key,
+        session,
+        sent: text,
+        submitMethod: method.name,
+        acceptanceHeuristics: {
+          changed,
+          busy: after.busy,
+          promptVisible: after.promptVisible,
+          answerAdvanced,
+          hasLiveSignal,
+        },
+      }, "medium");
     }
     if (i < submitMethods.length - 1) {
       await runTmux(["send-keys", "-t", session, "C-u"], 10).catch(() => {});
@@ -823,7 +829,7 @@ export async function stopAgent(config: Required<PluginConfig>, repo: string) {
     await rm(streamLogPath(session), { force: true }).catch(() => {});
     return { action: "stop" as const, repo: key, session, stopped: false };
   }
-  await stopStreamCapture(session);
+  
   await runTmux(["kill-session", "-t", session], 10);
   lastSendState.delete(session);
   sessionBaselines.delete(session);
@@ -874,7 +880,7 @@ export async function resumeAgent(config: Required<PluginConfig>, repo: string, 
 
   const launchOnce = async () => {
     await runTmux(["new-session", "-d", "-s", session, "-c", cwd], 20);
-    await startStreamCapture(session);
+    await resetStreamCapture(session, streamReadOffsets);
     await sleep(config.startDelaySec * 1000);
     await runTmux(["send-keys", "-t", session, "-l", "--", resumeCommand], 10);
     await runTmux(["send-keys", "-t", session, "Enter"], 10);
@@ -982,8 +988,8 @@ export async function waitForAgent(config: Required<PluginConfig>, repo: string,
   const timedOut = !completed;
   const finalSnapshot = lastSnapshot ? {
     ...lastSnapshot,
-    ...(await captureInteractiveSnapshot(session, 220, true)),
-  } : await captureInteractiveSnapshot(session, 220, true);
+    ...(await captureInteractiveSnapshot(session, 220, true, capturePane, sessionBaselines, lastSendState, streamReadOffsets)),
+  } : await captureInteractiveSnapshot(session, 220, true, capturePane, sessionBaselines, lastSendState, streamReadOffsets);
   const output = buildInteractiveOutput({
     ...finalSnapshot,
     streamDelta: timedOut ? (lastLive || finalSnapshot.streamDelta) : (finalSnapshot.answer || lastLive ? (lastLive || finalSnapshot.streamDelta) : finalSnapshot.streamDelta),
@@ -1249,7 +1255,7 @@ export async function quitSession(config: Required<PluginConfig>, repo: string) 
   await sleep(500);
   await runTmux(["send-keys", "-t", session, "C-d"], 10).catch(() => {});
   await sleep(800);
-  await stopStreamCapture(session);
+  
   // Force-kill the session to ensure cleanup.
   await runTmux(["kill-session", "-t", session], 10).catch(() => {});
   lastSendState.delete(session);

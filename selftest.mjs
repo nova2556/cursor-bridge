@@ -30,6 +30,7 @@ import {
   runTask,
 } from './index.ts';
 import { stripCommandEchoNoise, cleanOneShotOutput, extractLastAssistantAnswer, paneLooksBusy, paneShowsInputPrompt } from './heuristics.ts';
+import { normalizeTaskInteractiveOutput } from './task-orchestrator.ts';
 import { preferStreamOutput, buildInteractiveOutput } from './interactive-runtime.ts';
 import { interactiveMeta, interactiveResult } from './interactive-actions.ts';
 import fs from 'node:fs';
@@ -143,10 +144,17 @@ await step('compileTaskSpec utility', async () => {
   };
 });
 
-await step('task auto policy metadata assumptions', async () => ({
-  taskPreferInteractiveDefault: config.taskPreferInteractive,
-  autoModeExpectedLane: config.taskPreferInteractive ? 'interactive-emulated' : 'stable-cli',
-}));
+await step('task auto policy metadata assumptions', async () => {
+  const autoSpec = compileTaskSpec(config, 'Inspect the repository and summarize it', { mode: 'auto' });
+  const interactiveSpec = compileTaskSpec(config, 'Inspect the repository and summarize it', { mode: 'interactive' });
+  return {
+    taskPreferInteractiveDefault: config.taskPreferInteractive,
+    autoModeExpectedLane: config.taskPreferInteractive ? 'interactive-emulated' : 'stable-cli',
+    interactiveSpecMode: interactiveSpec.mode,
+    interactiveSpecGoal: interactiveSpec.goal,
+    autoSpecMode: autoSpec.mode,
+  };
+});
 
 await step('task signal extraction + summary synthesis', async () => {
   const spec = compileTaskSpec(config, 'Fix auth regression and validate it', {
@@ -159,6 +167,15 @@ await step('task signal extraction + summary synthesis', async () => {
     'Validation: npm test -- auth passed.',
     'Blocker: waiting on approval to rotate the production secret.',
     'Risk: production secret still needs manual rotation.',
+  ].join('\n');
+  const richInteractive = [
+    '结果',
+    '仓库是 Synclip.ai——一个 AI 驱动的视频编辑与内容创作 SaaS 平台。',
+    '关键目录',
+    '| web/ | Next.js 前端 |',
+    '| backend/ | Express 后端 |',
+    '风险 / 下一步最可能的工程行动',
+    '最可能的下一步：修复 /dev/usage 日志为空的问题。',
   ].join('\n');
   const signals = collectTaskSignals(sampleOutput);
   const milestoneStatus = inferMilestoneStatus(spec.milestones, sampleOutput);
@@ -177,13 +194,16 @@ await step('task signal extraction + summary synthesis', async () => {
     approvalSummary: signals.find((item) => item.kind === 'approval')?.text,
     decision: { mode: 'interactive', policy: 'reused live session for continuity', sessionStrategy: 'reuse-live', lane: 'interactive-emulated', reliability: 'medium', liveSession: 'cursor-test' },
   };
+  const richState = { ...state, rawOutput: richInteractive, output: richInteractive, signals: [] };
   const summary = synthesizeTaskSummary(spec, state);
+  const richSummary = synthesizeTaskSummary(spec, richState);
   const details = {
     signalKinds: signals.map((item) => item.kind),
     blockedMilestones: milestoneStatus.filter((item) => item.status === 'blocked').length,
     summary,
+    richSummary,
   };
-  if (!signals.some((item) => item.kind === 'validation') || !signals.some((item) => item.kind === 'blocker') || !summary.includes('Task report:') || !summary.includes('Risks / follow-ups:')) {
+  if (!signals.some((item) => item.kind === 'validation') || !signals.some((item) => item.kind === 'blocker') || !summary.includes('Task report:') || !summary.includes('Risks / follow-ups:') || !richSummary.includes('Synclip.ai') || !/Outcome: .*Synclip\.ai/.test(richSummary)) {
     throw new Error(`Task synthesis mismatch: ${JSON.stringify(details)}`);
   }
   return details;
