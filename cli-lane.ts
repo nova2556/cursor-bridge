@@ -150,7 +150,7 @@ export async function loginAgent(config: any, deps: any) {
   return { action: "login" as const, session: loginSession, output: deps.trimBlock(stdout, 4000) };
 }
 
-export async function updateAgent(config: any, deps: any) {
+export async function updateAgent(config: { allowAgent: boolean; agentCommand?: string; agentBinary: string; apiKey?: string; timeoutSec: number }, deps: Pick<CliLaneDeps, "quoteSh" | "runShell" | "trimBlock">) {
   if (!config.allowAgent) throw new Error("agent mode is disabled. Set allowAgent=true to enable Cursor agent sessions.");
   const base = config.agentCommand ? config.agentCommand : deps.quoteSh(config.agentBinary);
   const updateCommand = `${base} update`;

@@ -254,7 +254,7 @@ export function synthesizeTaskSummary(spec: any, state: any): string {
   ].filter(Boolean).join("\n\n");
 }
 
-export async function runTask(config: any, repo: string, goal: string, options: any, deps: any) {
+export async function runTask(config: { [key: string]: any }, repo: string, goal: string, options: any, deps: TaskOrchestratorDeps) {
   const spec = compileTaskSpec(config, goal, options);
   const decision = await chooseTaskSession(config, repo, spec, deps);
   const prompt = buildTaskPrompt(spec);
