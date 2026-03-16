@@ -750,31 +750,21 @@ export async function sendToAgent(config: Required<PluginConfig>, repo: string, 
 }
 
 export async function tailAgent(config: Required<PluginConfig>, repo: string, lines = 80) {
-  const { key } = resolveRepo(config, repo);
-  const session = tmuxSessionName(config, key);
-  if (!(await tmuxSessionExists(session))) {
-    throw new Error(`No active Cursor session for ${key}. Start one with /cursor start ${key}`);
-  }
-  const pane = await capturePane(session, Math.max(1, Math.min(400, lines)));
-  const scopedPane = trimToLastSendContext(session, pane);
-  const busy = paneLooksBusy(pane);
-  const answer = extractLastAssistantAnswer(scopedPane);
-  const streamTail = await peekStreamTail(session, 16000);
-  const streamDelta = await readStreamDelta(session);
-  const liveOutput = preferStreamOutput(streamDelta.delta || streamTail.text, scopedPane || pane, busy);
-  return {
+  const { key, session } = await requireInteractiveSession(config, repo, resolveRepo, tmuxSessionName, tmuxSessionExists, isAgentAlive);
+  const snapshot = await captureInteractiveSnapshot(session, Math.max(1, Math.min(400, lines)), true, capturePane, sessionBaselines, lastSendState, streamReadOffsets);
+  const built = buildInteractiveOutput(snapshot);
+  return interactiveResult({
     action: "tail" as const,
     repo: key,
     session,
     lines: Math.max(1, Math.min(400, lines)),
-    busy,
-    output: trimBlock((busy ? liveOutput : (answer || liveOutput || scopedPane || pane)), 16000),
-    rawOutput: trimBlock(streamTail.text || scopedPane || pane, 16000),
-    liveOutput: trimBlock(streamDelta.delta || "", 12000),
-    logPath: streamTail.logPath,
-    streamBytes: streamTail.bytes,
-    ...interactiveMeta("medium"),
-  };
+    busy: built.busy,
+    output: trimBlock(built.output, 16000),
+    rawOutput: trimBlock(built.rawOutput, 16000),
+    liveOutput: trimBlock(built.liveOutput, 12000),
+    logPath: built.logPath,
+    streamBytes: built.streamBytes,
+  }, "medium");
 }
 
 export async function stopAgent(config: Required<PluginConfig>, repo: string) {
