@@ -23,14 +23,13 @@ import {
   quitSession,
   linuxToWindowsPath,
   isTransientAgentError,
-  stripCommandEchoNoise,
-  cleanOneShotOutput,
   compileTaskSpec,
   collectTaskSignals,
   inferMilestoneStatus,
   synthesizeTaskSummary,
   runTask,
 } from './index.ts';
+import { stripCommandEchoNoise, cleanOneShotOutput, extractLastAssistantAnswer, paneLooksBusy, paneShowsInputPrompt } from './heuristics.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 
